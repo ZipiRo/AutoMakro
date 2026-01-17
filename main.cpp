@@ -13,7 +13,6 @@ namespace W {
 
 #include "Timer.h"
 
-
 float FPS = 60;
 std::atomic<bool> running;
 std::thread INPUT_THREAD;
@@ -138,7 +137,7 @@ void RecordKeys()
     {
         recording_keys = false;
         SaveRecording();
-        std::cout << "STOP\n";
+        std::cout << "STOP RECORDING\n";
         return;
     }
 
@@ -151,11 +150,12 @@ void RecordKeys()
     }
 }
 
+bool playing_recording = false;
 bool playing_keys = false;
 std::vector<int> play_keys;
 int playing_key_index = 0;
 
-float delay_betwen_keys = 0.2f;
+float delay_betwen_keys = 0;
 float delay_timer = 0;
 
 void FetchRecording()
@@ -194,16 +194,6 @@ void PlayKeys()
 
 void Play()
 {
-    if((W::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
-    {
-        playing_keys = false;
-        playing_key_index = 0;
-        delay_timer = 0;
-
-        std::cout << "STOP\n";
-        return;
-    }
-
     delay_timer += Time::deltaTime; 
     if(delay_timer >= delay_betwen_keys)
     {
@@ -236,8 +226,18 @@ int main()
 
             if(recording_keys)
                 RecordKeys(); 
-            else if(playing_keys)
-                Play();
+            else if(playing_recording)
+            {
+                if((W::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) /// STOP EVEN IF NOT FOCUSED
+                {
+                    playing_keys = false;
+                    playing_recording = false;
+                    playing_key_index = 0;
+                    delay_timer = 0;
+
+                    std::cout << "STOP PLAYING\n";
+                }
+            }
             else
             {
                 if(IsKeyDown(int('R')))
@@ -251,6 +251,7 @@ int main()
                 if((W::GetAsyncKeyState(VK_F12) & 0x8000) != 0) /// PLAY ON F12 EVEN IF NOT FOCUSED
                 {
                     playing_keys = true;
+                    playing_recording = true;
                     FetchRecording();
 
                     std::cout << "\nPLAYING...\n";
@@ -260,6 +261,9 @@ int main()
                     running = false;
             }
         }
+
+        if(playing_keys)
+            Play();
     }
 
     if(INPUT_THREAD.joinable())
