@@ -1,3 +1,7 @@
+/// THIS IS A MAKRO MAKER FOR WINDOWS
+/// VERSION 1.0 
+/// MADE BY ZIPIRO
+
 #include <iostream>
 #include <fstream>
 #include <vector>
