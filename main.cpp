@@ -15,12 +15,19 @@ namespace W {
     #include <windows.h>
 }
 
-#include "Timer.h"
+using W::DWORD;
+
+#include "NSTimer.h"
 
 float FPS = 60;
 std::atomic<bool> running;
 std::thread INPUT_THREAD;
+std::thread PLAY_THREAD;
 W::HWND CONSOLE_WINDOW;
+W::HANDLE CONSOLE_INPUT_HANDLE;
+
+Time main_Time;
+Time play_Time;
 
 std::string GetKeyName(int key)
 {
@@ -54,6 +61,7 @@ struct KEY
     int key;
     bool pressed;
     bool wasPressed;
+    bool focused;
 };
 
 KEY keys[256];
@@ -64,24 +72,24 @@ void PoolInput()
     {
         keys[key].wasPressed = keys[key].pressed;
         keys[key].pressed = (W::GetAsyncKeyState(key) & 0x8000) != 0;
+        keys[key].focused = IsFocused();
     }
 }
 
-bool IsKeyDown(int key)
+bool IsKeyDown(int key, bool needs_focus = true)
 {
-    return keys[key].pressed && !keys[key].wasPressed;
+    return keys[key].pressed && !keys[key].wasPressed && (!needs_focus || key[keys].focused);
 }
 
-bool IsKey(int key)
+bool IsKey(int key, bool needs_focus = true)
 {
-    return keys[key].pressed;
+    return keys[key].pressed && (!needs_focus || key[keys].focused);
 }
 
 void InputThread()
 {
     while(running)
     {
-        if(!IsFocused()) continue;
         PoolInput();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -117,13 +125,22 @@ void PressKey(int key)
     W::SendInput(2, input, sizeof(W::INPUT));
 }
 
+/// RECORDING KEYBOARD MAKRO
+
 std::vector<int> recorded_keys;
-
 bool recording_keys = false;
-
 void SaveRecording()
 {
-    std::ofstream file(".record", std::ios::binary);
+    std::string file_name;
+
+    W::FlushConsoleInputBuffer(CONSOLE_INPUT_HANDLE);
+    std::cout << "RECORD NAME: ";
+    std::cin >> file_name;
+    std::cout << '\n';
+
+    file_name += ".rec";
+
+    std::ofstream file(file_name, std::ios::binary);
     
     uint8_t count = (uint8_t)recorded_keys.size();
     file.write((char*)&count, sizeof(count));
@@ -133,6 +150,8 @@ void SaveRecording()
 
     file.flush();
     file.close();
+    
+    std::cout << "SAVED----------------------------\n";
 }
 
 void RecordKeys()
@@ -140,8 +159,10 @@ void RecordKeys()
     if(IsKey(VK_ESCAPE))
     {
         recording_keys = false;
-        SaveRecording();
         std::cout << "STOP RECORDING\n";
+        std::cout << "---------------------------------\n";
+        SaveRecording();
+        
         return;
     }
 
@@ -154,19 +175,34 @@ void RecordKeys()
     }
 }
 
+/// PLAYING RECORDED KEYS
+
 bool playing_recording = false;
-bool playing_keys = false;
+std::atomic<bool> playing_keys = false;
 std::vector<int> play_keys;
 int playing_key_index = 0;
 
-float delay_betwen_keys = 0;
+float delay_betwen_keys = 1.0f;
 float delay_timer = 0;
 
-void FetchRecording()
+float delay_start = 1.0f;
+float delay_start_timer = 0;
+
+bool FetchRecording()
 {
+    std::string file_name;
+
+    W::FlushConsoleInputBuffer(CONSOLE_INPUT_HANDLE);
+    std::cout << "RECORD FILE: ";
+    std::cin >> file_name;
+    std::cout << '\n';
+
     play_keys.clear();
-    std::ifstream file(".record", std::ios::binary);
+    std::ifstream file(file_name, std::ios::binary);
     
+    if(!file)
+        return false;
+
     int count = 0;
     file.read((char*)&count, sizeof(char));
 
@@ -183,95 +219,226 @@ void FetchRecording()
     for(auto key : play_keys)
         std::cout << GetKeyName(key) << " => ";
     std::cout << '\n'; 
+
+    std::cout << "LOADED---------------------------\n";
+    return true;
 }
 
 void PlayKeys()
 {
-    int key = play_keys[playing_key_index];
-    playing_key_index++;
-
-    if(playing_key_index > play_keys.size() - 1)
-        playing_key_index = 0;
-
-    PressKey(key);
-}
-
-void Play()
-{
-    delay_timer += Time::deltaTime; 
     if(delay_timer >= delay_betwen_keys)
     {
         delay_timer = 0;
-        PlayKeys();
+
+        int key = play_keys[playing_key_index];
+        playing_key_index++;
+
+        if(playing_key_index > play_keys.size() - 1)
+            playing_key_index = 0;
+
+        PressKey(key);
+    }
+}
+
+void PlayThread()
+{
+    while(running)
+    {
+        if(!playing_keys)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+        
+        play_Time.Tick();
+        if(play_Time.deltaTime >= 1.0f / 9999)
+        {
+            play_Time.Reset();
+
+            delay_timer += play_Time.deltaTime;
+            PlayKeys();
+        }
+    }
+}
+
+/// MENUS AND STTINGS INTERFACE
+void Menu_UI()
+{
+    std::cout << "------------AutoMakro------------\n";
+    std::cout << "| R - RECORD_KEYBOARD\n";
+    std::cout << "| L - LOAD_RECORD\n";
+    std::cout << "| F12 | F9 - PLAY_RECORD\n";
+    std::cout << "| S - SETTINGS\n";
+    std::cout << "| DEL - CLEAR SCREEN\n";
+    std::cout << "| ESC - QUIT\n";
+    std::cout << "---------------------------------\n";
+}
+
+void Settings_UI()
+{
+    std::cout << "-------------Settings------------\n";
+    std::cout << "| 1 - DELAY_BETWEN_KEYS( "<< delay_betwen_keys <<"s )\n";
+    std::cout << "| 2 - START_DELAY( "<< delay_start <<"s )\n";
+    std::cout << "| ESC - MAIN MENU\n";
+    std::cout << "---------------------------------\n";
+}
+
+bool settings = false;
+void Settings()
+{
+    if(IsKeyDown(VK_ESCAPE))
+    {
+        system("cls");
+        settings = false;
+        Menu_UI();
+    }
+
+    if(IsKeyDown(int('1')))
+    {
+        W::FlushConsoleInputBuffer(CONSOLE_INPUT_HANDLE);
+        float delay = 0.0f;
+        std::cout << "DELAY IN SECONDS (> 0.005): ";
+        std::cin >> delay;
+
+        if(delay < 0.005f)
+            delay = 0.005f;
+            
+        delay_betwen_keys = delay;
+        system("cls");
+        Settings_UI();
+    }
+    else if(IsKeyDown(int('2')))
+    {
+        W::FlushConsoleInputBuffer(CONSOLE_INPUT_HANDLE);
+        float delay = 0.0f;
+        std::cout << "START DELAY IN SECONDS (>= 0): ";
+        std::cin >> delay;
+
+        if(delay < 0)
+            delay = 0;
+            
+        delay_start = delay;
+        system("cls");
+        Settings_UI();
     }
 }
 
 int main()
 {
     running = true;
-    Time::GetInstance();
-    CONSOLE_WINDOW = W::GetConsoleWindow();
+    main_Time = Time();
     
-    INPUT_THREAD = std::thread(&InputThread);
+    CONSOLE_WINDOW = W::GetConsoleWindow();
+    CONSOLE_INPUT_HANDLE = W::GetStdHandle(STD_INPUT_HANDLE);
 
-    std::cout << "------------AutoMakro------------\n";
-    std::cout << "R - RECORD KEYBOARD\n";
-    std::cout << "F12 - PLAY_RECORD\n";
-    std::cout << "ESC - QUIT\n";
-    std::cout << "---------------------------------\n";
+    INPUT_THREAD = std::thread(&InputThread);
+    PLAY_THREAD = std::thread(&PlayThread);
+
+    system("cls");
+    Menu_UI();
 
     while (running)
     {
-        Time::Tick();
+        main_Time.Tick();
         
-        if(Time::deltaTime >= 1.0f / FPS)
+        if(main_Time.deltaTime >= 1.0f / FPS)
         {
-            Time::Reset();       
+            main_Time.Reset();       
 
             if(recording_keys)
-                RecordKeys(); 
-            else if(playing_recording)
             {
-                if((W::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) /// STOP EVEN IF NOT FOCUSED
+                RecordKeys(); 
+            }
+            else if(playing_recording)
+            { 
+                if(IsKeyDown(VK_ESCAPE, false))
                 {
                     playing_keys = false;
                     playing_recording = false;
-                    playing_key_index = 0;
-                    delay_timer = 0;
 
                     std::cout << "STOP PLAYING\n";
+                    std::cout << "---------------------------------\n";
                 }
+                
+                if(!playing_keys) 
+                {
+                    delay_start_timer += main_Time.deltaTime;
+                    if(delay_start_timer >= delay_start)
+                    {
+                        playing_keys = true;
+                        playing_key_index = 0;
+                        delay_timer = 0;
+                        delay_start_timer = 0;
+                        play_Time = Time();
+
+                        std::cout << "\nPLAYING...\n";
+                        std::cout << "ESC TO STOP\n";
+                        std::cout << "---------------------------------\n";
+                    }
+                }    
+            }
+            else if(settings)
+            {
+                Settings();
             }
             else
             {
+                /// RECORD KEYBOARD MAKRO
                 if(IsKeyDown(int('R')))
                 {
                     recorded_keys.clear();
                     recording_keys = true;
 
-                    std::cout << "RECORDING...\n"; 
+                    std::cout << "\nRECORDING...\n"; 
+                    std::cout << "ESC TO STOP\n";
+                    std::cout << "---------------------------------\n";
                 }
 
-                if((W::GetAsyncKeyState(VK_F12) & 0x8000) != 0) /// PLAY ON F12 EVEN IF NOT FOCUSED
+                /// LOAD KEYBOARD RECORD
+                if(IsKeyDown(int('L')))
                 {
-                    playing_keys = true;
-                    playing_recording = true;
-                    FetchRecording();
+                    if(!FetchRecording())
+                        std::cout << "FILE WAS NOT LOADED!\n";
+                }
 
-                    std::cout << "\nPLAYING...\n";
+                if(IsKeyDown(int('S')))
+                {
+                    system("cls");
+                    Settings_UI();
+                    settings =  true;
+                }
+
+                /// PLAY KEYBOARD MAKRO
+                if(IsKeyDown(VK_F12, false) || IsKeyDown(VK_F9, false))
+                {
+                    if(!play_keys.empty())
+                    {
+                        playing_recording = true;
+                        std::cout << "STARTING IN " << delay_start << "s\n";
+                    }
+                    else
+                    {
+                        std::cout << "NO RECORD LOADED!\n";
+                    }
+                }
+
+                if(IsKeyDown(VK_DELETE))
+                {
+                    system("cls");
+                    Menu_UI();
                 }
 
                 if(IsKeyDown(VK_ESCAPE))
                     running = false;
             }
         }
-
-        if(playing_keys)
-            Play();
     }
 
     if(INPUT_THREAD.joinable())
         INPUT_THREAD.join();
+    
+    if(PLAY_THREAD.joinable())
+        PLAY_THREAD.join();
 
     return 0;
 }
