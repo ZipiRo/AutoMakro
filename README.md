@@ -1,5 +1,9 @@
 # AutoMakro (Windows)
 
+![AutoMakro Demo](screenshot_1.png)
+![AutoMakro Demo](screenshot_2.png)
+![AutoMakro Demo](demo.gif)
+
 **AutoMakro** is a lightweight Windows console application that records and replays keyboard macros using the Win32 `SendInput` API.  
 
 ---
