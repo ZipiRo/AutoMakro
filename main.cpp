@@ -17,7 +17,7 @@ namespace W {
 
 using W::DWORD;
 
-#include "NSTimer.h"
+#include "Timer.h"
 
 float FPS = 60;
 std::atomic<bool> running;
